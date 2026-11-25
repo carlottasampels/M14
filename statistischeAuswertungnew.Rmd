@@ -1,0 +1,485 @@
+---
+title: "Statistische Auswertung"
+author: "Carlotta Sampels"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# 1. Setup & Datenaufbereitung
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r pakete_und_pfade}
+# Benötigte Pakete laden
+library(tidyverse)
+library(psych)
+library(reshape2)
+library(openxlsx)
+
+# Externe Pfad-Datei einlesen
+source("C:/Users/carlo/OneDrive/Studium/Master/MSB/2. Semester/M14 Foschung/Skripte/pfade.R")
+
+# Farbpalette und einheitliches Plot-Design definieren
+farben <- list(
+  gruen_dunkel = "#1b4332",
+  gruen_mittel = "#2d6a4f",
+  gruen_hell   = "#74c69d",
+  gruen_fill   = "#d8f3dc",
+  lila_dunkel  = "#3c096c",
+  lila_mittel  = "#7b2cbf",
+  lila_hell    = "#c77dff",
+  lila_fill    = "#e0aaff"
+)
+
+theme_bericht <- function() {
+  theme_classic(base_size = 12) +
+    theme(
+      legend.position  = "top",
+      legend.title     = element_blank(),
+      axis.text        = element_text(color = "black"),
+      axis.title       = element_text(face = "bold"),
+      strip.background = element_rect(fill = farben$gruen_fill, color = "black"),
+      strip.text       = element_text(face = "bold", color = "black")
+    )
+}
+```
+
+```{r daten_einlesen}
+# Rohdaten laden und Demografie-Spalten zuordnen
+data_raw <- read.csv2(pfad_daten, fileEncoding = "latin1", stringsAsFactors = FALSE)
+
+col_geschlecht     <- colnames(data_raw)[grep("Geschlecht", colnames(data_raw))][1]
+col_haendigkeit    <- colnames(data_raw)[grep("Händigkeit|HÃ¤ndigkeit", colnames(data_raw))][1]
+col_bildung        <- colnames(data_raw)[grep("Bildung", colnames(data_raw))][1]
+col_beschaeftigung <- colnames(data_raw)[grep("Beschäft|BeschÃ¤ft", colnames(data_raw))][1]
+
+# Relevante Spalten in numerisches Format umwandeln
+num_cols <- c(
+  "Alter", "Wie.lange.", "tactile.li", "tactile.re",
+  "SPF_EC", "SPF_F", "SPF_PT", "SPF_PD", "SPF_ges",
+  "ACC._COG", "ACC._AFF", "RT_mean", "RT_mean_inS",
+  "RT_COG_mean", "RT_COG_inS", "RT_AFF_mean", "RT_AFF_inS",
+  "RT_1ORD_mean", "RT_2ORD_mean"
+)
+
+data <- data_raw %>%
+  mutate(across(all_of(intersect(num_cols, colnames(.))), ~as.numeric(gsub(",", ".", .)))) %>%
+  mutate(
+    Musik_Jahre  = Wie.lange.,
+    Musik_Gruppe = ifelse(!is.na(Musik_Jahre) & Musik_Jahre > 0, "Musiker", "Nicht-Musiker")
+  )
+
+# Teilstichproben für die Musikanalyse erstellen
+data_musiker      <- data %>% filter(!is.na(Musik_Jahre), Musik_Jahre > 0)
+data_musik_ohne_a <- data %>% filter(is.na(Musik_Jahre) | Musik_Jahre < 40)
+```
+
+
+# 2. Deskriptive Statistik & Demografie
+
+```{r tabelle_deskriptiv}
+vars_deskriptiv <- c(
+  "Alter"      = "Alter (Jahre)",
+  "tactile.li" = "Taktile Fehler links",
+  "tactile.re" = "Taktile Fehler rechts",
+  "SPF_EC"     = "SPF Empathische Besorgnis (EC)",
+  "SPF_F"      = "SPF Phantasie (FS)",
+  "SPF_PT"     = "SPF Perspektivenübernahme (PT)",
+  "SPF_PD"     = "SPF Persönliches Leid (PD)",
+  "SPF_ges"    = "SPF Gesamtwert",
+  "ACC._COG"   = "Kognitive ToM (Genauigkeit)",
+  "ACC._AFF"   = "Affektive ToM (Genauigkeit)"
+)
+
+# Deskriptive Kennwerte berechnen und speichern
+tabelle_deskriptiv <- data %>%
+  select(all_of(names(vars_deskriptiv))) %>%
+  pivot_longer(cols = everything(), names_to = "Variable_Roh", values_to = "Wert") %>%
+  mutate(Variable = factor(vars_deskriptiv[Variable_Roh], levels = vars_deskriptiv)) %>%
+  group_by(Variable) %>%
+  summarise(
+    n   = sum(!is.na(Wert)),
+    M   = sprintf("%.2f", mean(Wert, na.rm = TRUE)),
+    SD  = sprintf("%.2f", sd(Wert, na.rm = TRUE)),
+    Min = sprintf("%.2f", min(Wert, na.rm = TRUE)),
+    Max = sprintf("%.2f", max(Wert, na.rm = TRUE)),
+    .groups = "drop"
+  )
+
+print(tabelle_deskriptiv)
+write.csv2(tabelle_deskriptiv, file.path(ordner_tabellen, "Deskriptive_Statistik.csv"), row.names = FALSE)
+write.xlsx(tabelle_deskriptiv, file.path(ordner_tabellen, "Deskriptive_Statistik.xlsx"), overwrite = TRUE)
+```
+
+```{r tabelle_demografie}
+demo_alter <- data %>%
+  summarise(
+    Merkmal   = "Alter (Jahre)",
+    Kategorie = "Gesamtstichprobe",
+    n         = sum(!is.na(Alter)),
+    `M / %`   = sprintf("%.2f", mean(Alter, na.rm = TRUE)),
+    SD        = sprintf("%.2f", sd(Alter, na.rm = TRUE)),
+    Min       = as.character(min(Alter, na.rm = TRUE)),
+    Max       = as.character(max(Alter, na.rm = TRUE))
+  )
+
+berechne_kategorial <- function(df, spalte, merkmal_name, label_vektor) {
+  df %>%
+    filter(!is.na(.data[[spalte]])) %>%
+    count(.data[[spalte]], name = "n") %>%
+    mutate(
+      Prozent   = sprintf("%.1f%%", (n / sum(n)) * 100),
+      Merkmal   = merkmal_name,
+      Kategorie = label_vektor[as.character(.data[[spalte]])],
+      `M / %`   = Prozent,
+      SD        = "—",
+      Min       = "—",
+      Max       = "—"
+    ) %>%
+    select(Merkmal, Kategorie, n, `M / %`, SD, Min, Max)
+}
+
+labels_geschlecht  <- c("1" = "Weiblich", "2" = "Männlich")
+labels_haendigkeit <- c("1" = "Rechtshändig", "2" = "Linkshändig")
+labels_bildung     <- c("1" = "Kategorie 1", "2" = "Kategorie 2", "3" = "Kategorie 3", "4" = "Kategorie 4", "5" = "Kategorie 5")
+labels_beschaeft   <- c("1" = "Kategorie 1", "2" = "Kategorie 2", "3" = "Kategorie 3", "4" = "Kategorie 4")
+
+tabelle_demografie <- bind_rows(
+  demo_alter,
+  berechne_kategorial(data, col_geschlecht, "Geschlecht", labels_geschlecht),
+  berechne_kategorial(data, col_haendigkeit, "Händigkeit", labels_haendigkeit),
+  berechne_kategorial(data, col_bildung, "Bildungsabschluss", labels_bildung),
+  berechne_kategorial(data, col_beschaeftigung, "Beschäftigungsstatus", labels_beschaeft)
+)
+
+write.csv2(tabelle_demografie, file.path(ordner_tabellen, "Demografische_Statistik.csv"), row.names = FALSE)
+```
+
+
+# 3. Verteilungsplots: Alter & Musizierdauer
+
+```{r plot_altersverteilung}
+alter_mean   <- mean(data$Alter, na.rm = TRUE)
+alter_median <- median(data$Alter, na.rm = TRUE)
+
+plot_alter <- ggplot(data, aes(x = Alter)) +
+  geom_density(fill = farben$gruen_fill, color = farben$gruen_dunkel, linewidth = 1, alpha = 0.8) +
+  geom_vline(xintercept = alter_mean, color = farben$lila_mittel, linetype = "dashed", linewidth = 1) +
+  geom_vline(xintercept = alter_median, color = farben$gruen_dunkel, linetype = "dotdash", linewidth = 1) +
+  annotate("text", x = alter_mean + 1.5, y = 0.03, label = paste("M =", round(alter_mean, 2)),
+           color = farben$lila_mittel, angle = 90, fontface = "bold") +
+  annotate("text", x = alter_median - 1.5, y = 0.03, label = paste("Mdn =", round(alter_median, 2)),
+           color = farben$gruen_dunkel, angle = 90, fontface = "bold") +
+  labs(x = "Alter (in Jahren)", y = "Dichte") +
+  theme_bericht()
+
+ggsave(file.path(ordner_plots, "Verteilung_Alter.png"), plot = plot_alter, width = 7, height = 4.5, dpi = 300)
+```
+
+```{r plot_musizierdauer}
+musik_mean   <- mean(data_musiker$Musik_Jahre, na.rm = TRUE)
+musik_median <- median(data_musiker$Musik_Jahre, na.rm = TRUE)
+
+plot_musik_jahre <- ggplot(data_musiker, aes(x = Musik_Jahre)) +
+  geom_density(fill = farben$lila_fill, color = farben$lila_dunkel, linewidth = 1, alpha = 0.8) +
+  geom_vline(xintercept = musik_mean, color = farben$lila_mittel, linetype = "dashed", linewidth = 1) +
+  geom_vline(xintercept = musik_median, color = farben$gruen_dunkel, linetype = "dotdash", linewidth = 1) +
+  annotate("text", x = musik_mean + 1.5, y = 0.02, label = paste("M =", round(musik_mean, 2)),
+           color = farben$lila_mittel, angle = 90, fontface = "bold") +
+  annotate("text", x = musik_median - 1.5, y = 0.02, label = paste("Mdn =", round(musik_median, 2)),
+           color = farben$gruen_dunkel, angle = 90, fontface = "bold") +
+  labs(x = "Jahre des Musizierens", y = "Dichte") +
+  theme_bericht()
+
+ggsave(file.path(ordner_plots, "Verteilung_Musizierdauer.png"), plot = plot_musik_jahre, width = 7, height = 4.5, dpi = 300)
+```
+
+```{r plot_alter_und_musik_kombiniert}
+data_dichte_lang <- data_musiker %>%
+  select(Lebensalter = Alter, Musizierdauer = Musik_Jahre) %>%
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Jahre")
+
+plot_dichten_komplett <- ggplot(data_dichte_lang, aes(x = Jahre, fill = Variable, color = Variable)) +
+  geom_density(alpha = 0.6, linewidth = 1) +
+  scale_fill_manual(values = c("Lebensalter" = farben$gruen_fill, "Musizierdauer" = farben$lila_fill)) +
+  scale_color_manual(values = c("Lebensalter" = farben$gruen_dunkel, "Musizierdauer" = farben$lila_dunkel)) +
+  geom_vline(xintercept = musik_mean, color = farben$lila_mittel, linetype = "dashed", linewidth = 0.9) +
+  geom_vline(xintercept = musik_median, color = farben$lila_dunkel, linetype = "dotdash", linewidth = 0.9) +
+  annotate("text", x = musik_mean + 1.5, y = 0.04, label = paste("Musik M =", round(musik_mean, 2)),
+           color = farben$lila_mittel, angle = 90, fontface = "bold", size = 3.5) +
+  annotate("text", x = musik_median - 1.5, y = 0.04, label = paste("Musik Mdn =", round(musik_median, 2)),
+           color = farben$lila_dunkel, angle = 90, fontface = "bold", size = 3.5) +
+  labs(x = "Zeitspanne (in Jahren)", y = "Dichte") +
+  theme_bericht()
+
+ggsave(file.path(ordner_plots, "Verteilung_Alter_vs_Musizierdauer.png"), plot = plot_dichten_komplett, width = 7.5, height = 4.5, dpi = 300)
+```
+
+
+# 4. Multiple Regressionen (Hypothesen H1–H4)
+
+```{r regressionen_berechnung_und_export}
+# Variablen für standardisierte Regressionsgewichte z-standardisieren
+data_scaled <- data %>%
+  mutate(across(all_of(c("ACC._COG", "ACC._AFF", "Alter", "tactile.li", "tactile.re", "SPF_ges", col_geschlecht)),
+                ~as.numeric(scale(.))))
+
+# Vier multiple Regressionsmodelle schätzen
+mod_cog_li <- lm(as.formula(paste("ACC._COG ~ Alter +", col_geschlecht, "+ tactile.li + SPF_ges")), data = data_scaled)
+mod_aff_li <- lm(as.formula(paste("ACC._AFF ~ Alter +", col_geschlecht, "+ tactile.li + SPF_ges")), data = data_scaled)
+mod_cog_re <- lm(as.formula(paste("ACC._COG ~ Alter +", col_geschlecht, "+ tactile.re + SPF_ges")), data = data_scaled)
+mod_aff_re <- lm(as.formula(paste("ACC._AFF ~ Alter +", col_geschlecht, "+ tactile.re + SPF_ges")), data = data_scaled)
+
+summary(mod_cog_li)
+summary(mod_aff_li)
+summary(mod_cog_re)
+summary(mod_aff_re)
+
+# Hilfsfunktionen für die Formatierung der Tabellenwerte
+fmt_p <- function(p) ifelse(p < 0.001, "< .001", sub("^0+", "", sprintf("%.3f", p)))
+fmt_b <- function(x) sub("^(-?)0\\.", "\\1.", sprintf("%.2f", x))
+
+erstelle_hand_tabelle <- function(mod_cog, mod_aff, label_taktil, var_taktil) {
+  cf_c <- summary(mod_cog)$coefficients
+  cf_a <- summary(mod_aff)$coefficients
+  
+  rows <- c(grep("Alter", rownames(cf_c)), grep("Geschlecht", rownames(cf_c)),
+            grep(var_taktil, rownames(cf_c)), grep("SPF_ges", rownames(cf_c)))
+  
+  tibble(
+    Prädiktor  = c("Alter (Jahre)", "Geschlecht", label_taktil, "SPF Gesamtwert"),
+    `β (Kog)`  = fmt_b(cf_c[rows, 1]),
+    `SE (Kog)` = sprintf("%.2f", cf_c[rows, 2]),
+    `t (Kog)`  = sprintf("%.2f", cf_c[rows, 3]),
+    `p (Kog)`  = fmt_p(cf_c[rows, 4]),
+    `β (Aff)`  = fmt_b(cf_a[rows, 1]),
+    `SE (Aff)` = sprintf("%.2f", cf_a[rows, 2]),
+    `t (Aff)`  = sprintf("%.2f", cf_a[rows, 3]),
+    `p (Aff)`  = fmt_p(cf_a[rows, 4])
+  )
+}
+
+tab_links  <- erstelle_hand_tabelle(mod_cog_li, mod_aff_li, "Taktile Fehler (linke Hand)", "tactile.li")
+tab_rechts <- erstelle_hand_tabelle(mod_cog_re, mod_aff_re, "Taktile Fehler (rechte Hand)", "tactile.re")
+
+write.xlsx(tab_links, file.path(ordner_tabellen, "Tabelle2_Regression_Links.xlsx"), overwrite = TRUE)
+write.xlsx(tab_rechts, file.path(ordner_tabellen, "Tabelle3_Regression_Rechts.xlsx"), overwrite = TRUE)
+```
+
+```{r plot_regression_balken}
+extrahier_modell_daten <- function(model, modell_name, pradiktor_taktil) {
+  cf <- summary(model)$coefficients
+  rows <- c(
+    grep("Alter", rownames(cf)),
+    grep("Geschlecht", rownames(cf)),
+    grep(pradiktor_taktil, rownames(cf)),
+    grep("SPF_ges", rownames(cf))
+  )
+  tibble(
+    Modell    = modell_name,
+    Prädiktor = factor(c("Alter", "Geschlecht", "Taktile Sens.", "SPF Empathie"),
+                       levels = c("Alter", "Geschlecht", "Taktile Sens.", "SPF Empathie")),
+    Beta      = cf[rows, 1],
+    p         = cf[rows, 4],
+    Sig       = case_when(p < 0.001 ~ "***", p < 0.01 ~ "**", p < 0.05 ~ "*", p < 0.10 ~ "†", TRUE ~ "")
+  )
+}
+
+df_betas <- bind_rows(
+  extrahier_modell_daten(mod_cog_li, "Links – Kognitive ToM", "tactile.li"),
+  extrahier_modell_daten(mod_aff_li, "Links – Affektive ToM", "tactile.li"),
+  extrahier_modell_daten(mod_cog_re, "Rechts – Kognitive ToM", "tactile.re"),
+  extrahier_modell_daten(mod_aff_re, "Rechts – Affektive ToM", "tactile.re")
+) %>%
+  mutate(Modell = factor(Modell, levels = c("Links – Kognitive ToM", "Links – Affektive ToM",
+                                            "Rechts – Kognitive ToM", "Rechts – Affektive ToM")))
+
+plot_betas <- ggplot(df_betas, aes(x = Prädiktor, y = Beta, fill = Modell)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7, color = "black") +
+  geom_hline(yintercept = 0, color = "black", linewidth = 0.6) +
+  geom_text(aes(label = Sig, y = ifelse(Beta < 0, Beta - 0.04, Beta + 0.04)),
+            position = position_dodge(width = 0.8), fontface = "bold", size = 4.5) +
+  scale_fill_manual(values = c(
+    "Links – Kognitive ToM"  = farben$gruen_dunkel,
+    "Links – Affektive ToM"  = farben$gruen_hell,
+    "Rechts – Kognitive ToM" = farben$lila_dunkel,
+    "Rechts – Affektive ToM" = farben$lila_hell
+  )) +
+  coord_cartesian(ylim = c(-0.6, 0.25)) +
+  labs(x = "Prädiktor", y = "Standardisierter Regressionskoeffizient (β)") +
+  theme_bericht()
+
+ggsave(file.path(ordner_plots, "Regression_Beta_Vergleich.png"), plot = plot_betas, width = 8.5, height = 5, dpi = 300)
+```
+
+```{r plot_regression_scatter_grid}
+# Streudiagramme für alle vier Kombinationen aus Hand und ToM-Bedingung (Abbildung 2)
+data_long_grid <- data %>%
+  select(Links = tactile.li, Rechts = tactile.re, `Kognitive ToM` = ACC._COG, `Affektive ToM` = ACC._AFF) %>%
+  pivot_longer(cols = c(Links, Rechts), names_to = "Hand", values_to = "Taktil") %>%
+  pivot_longer(cols = c(`Kognitive ToM`, `Affektive ToM`), names_to = "ToM", values_to = "Wert") %>%
+  filter(!is.na(Taktil), !is.na(Wert))
+
+plot_gesamt_grid <- ggplot(data_long_grid, aes(x = Taktil, y = Wert)) +
+  geom_point(color = farben$gruen_mittel, size = 1.8, alpha = 0.6) +
+  geom_smooth(method = "lm", color = farben$lila_mittel, fill = farben$lila_fill, linewidth = 1, se = TRUE) +
+  facet_grid(ToM ~ Hand, scales = "free_y") +
+  labs(x = "Taktile Fehleranzahl", y = "ToM-Genauigkeit (Yoni-Task)") +
+  theme_bericht()
+
+print(plot_gesamt_grid)
+ggsave(file.path(ordner_plots, "Regression_Scatterplots_Grid.png"), plot = plot_gesamt_grid, width = 8, height = 6, dpi = 300)
+```
+
+
+# 5. Explorative Zusatzanalyse: Musikalische Praxis & SPF Phantasie
+
+```{r analyse_musik_phantasie}
+# Datensatz für Phantasie-Analyse vorbereiten (Nicht-Musiker erhalten 0 Jahre)
+data_musik_gesamt <- data %>%
+  filter(!is.na(SPF_F)) %>%
+  mutate(Musik_Jahre = ifelse(is.na(Musik_Jahre), 0, Musik_Jahre))
+
+# Bereinigte Teilstichprobe ohne Ausreißer (>= 40 Jahre Spielpraxis, n = 39)
+data_musik_bereinigt <- data_musik_gesamt %>%
+  filter(Musik_Jahre < 40)
+
+# 1. Alterskontrollierte Regression über die Gesamtstichprobe (N = 41)
+mod_musik_gesamt <- lm(SPF_F ~ Musik_Jahre + Alter, data = data_musik_gesamt)
+summary(mod_musik_gesamt)
+
+# 2. Alterskontrollierte Regression ohne Ausreißer (n = 39)
+mod_musik_bereinigt <- lm(SPF_F ~ Musik_Jahre + Alter, data = data_musik_bereinigt)
+summary(mod_musik_bereinigt)
+
+# Bivariate Korrelation in der bereinigten Teilstichprobe (n = 39)
+cor.test(data_musik_bereinigt$Musik_Jahre, data_musik_bereinigt$SPF_F)
+
+# Regressionsergebnisse als Tabelle exportieren
+sum_mp <- summary(mod_musik_bereinigt)$coefficients
+tab_musik_phantasie <- tibble(
+  Prädiktor = c("(Konstante)", "Jahre des Musizierens", "Alter (Jahre)"),
+  B         = sprintf("%.3f", sum_mp[, 1]),
+  SE        = sprintf("%.3f", sum_mp[, 2]),
+  t         = sprintf("%.2f", sum_mp[, 3]),
+  p         = ifelse(sum_mp[, 4] < 0.001, "< .001", sub("^0+", "", sprintf("%.3f", sum_mp[, 4])))
+)
+write.csv2(tab_musik_phantasie, file.path(ordner_tabellen, "Regression_Musik_Phantasie.csv"), row.names = FALSE)
+
+# Streudiagramm für die bereinigte Teilstichprobe (Abbildung 3)
+plot_musik_phantasie <- ggplot(data_musik_bereinigt, aes(x = Musik_Jahre, y = SPF_F)) +
+  geom_point(color = farben$gruen_mittel, alpha = 0.7, size = 2) +
+  geom_smooth(method = "lm", color = farben$lila_mittel, fill = farben$lila_fill, linewidth = 1) +
+  labs(x = "Musizierdauer in Jahren", y = "SPF Subskala Phantasie (FS)") +
+  theme_bericht()
+
+print(plot_musik_phantasie)
+ggsave(file.path(ordner_plots, "Musik_Jahre_vs_SPF_Phantasie.png"), plot = plot_musik_phantasie, width = 7, height = 4.5, dpi = 300)
+
+# Gruppenvergleich der taktilen Fehlerwerte (Musizierende vs. Nicht-Musizierende)
+t.test(tactile.li ~ Musik_Gruppe, data = data)
+t.test(tactile.re ~ Musik_Gruppe, data = data)
+```
+
+
+# 6. Korrelationsmatrizen & Heatmaps
+
+```{r korrelation_gesamt_heatmap}
+# Variablen für die Gesamtkorrelation auswählen
+data_corr_all <- data %>%
+  select(
+    `Taktil Links`                   = tactile.li,
+    `Taktil Rechts`                  = tactile.re,
+    `SPF Empathische Sorge (EC)`     = SPF_EC,
+    `SPF Phantasie (FS)`             = SPF_F,
+    `SPF Perspektivenübernahme (PT)` = SPF_PT,
+    `SPF Persönliches Leid (PD)`     = SPF_PD,
+    `SPF Gesamtscore`                = SPF_ges,
+    `Yoni Kognitive ToM`             = ACC._COG,
+    `Yoni Affektive ToM`             = ACC._AFF
+  )
+
+# Pearson-Korrelationen berechnen
+corr_obj <- corr.test(data_corr_all, method = "pearson", use = "pairwise", adjust = "none")
+
+r_mat <- corr_obj$r
+p_mat <- corr_obj$p
+
+# Unteres linkes Dreieck (durch umgedrehte y-Achse entspricht dies upper.tri) inklusive Diagonale behalten
+keep_mat <- upper.tri(r_mat, diag = TRUE)
+
+melted_gesamt <- melt(r_mat, value.name = "r") %>%
+  left_join(melt(p_mat, value.name = "p"), by = c("Var1", "Var2")) %>%
+  filter(as.vector(keep_mat)) %>%
+  mutate(
+    Var1    = factor(Var1, levels = colnames(r_mat)),
+    Var2    = factor(Var2, levels = rev(colnames(r_mat))),
+    is_diag = as.character(Var1) == as.character(Var2),
+    r_fill  = ifelse(is_diag, NA, r),
+    Sig     = case_when(is_diag ~ "", p < 0.001 ~ "***", p < 0.01 ~ "**", p < 0.05 ~ "*", TRUE ~ ""),
+    Label   = ifelse(is_diag, "1.00", paste0(sub("^(-?)0\\.", "\\1.", sprintf("%.2f", r)), Sig))
+  )
+
+plot_gesamt_heatmap <- ggplot(melted_gesamt, aes(x = Var1, y = Var2, fill = r_fill)) +
+  geom_tile(color = "white", linewidth = 0.8) +
+  geom_text(aes(label = Label), color = "black", fontface = "bold", size = 3.3) +
+  scale_fill_distiller(
+    palette  = "PRGn",
+    limits   = c(-1, 1),
+    breaks   = c(-1, -0.5, 0, 0.5, 1),
+    name     = "r",
+    na.value = "#f8f9fa",
+    guide    = guide_colorbar(
+      title.position = "top",
+      title.hjust    = 0.5,
+      barwidth       = 1.2,
+      barheight      = 12
+    )
+  ) +
+  labs(x = NULL, y = NULL) +
+  theme_bericht() +
+  theme(
+    axis.text.x          = element_text(angle = 35, hjust = 1),
+    axis.line            = element_blank(),
+    axis.ticks           = element_blank(),
+    legend.position      = "right",
+    legend.justification = "center"
+  )
+
+print(plot_gesamt_heatmap)
+ggsave(file.path(ordner_plots, "Korrelation_Heatmap_Gesamt.png"), plot = plot_gesamt_heatmap, width = 8.5, height = 6.5, dpi = 300)
+```
+```
+```
+
+
+# 7. Voraussetzungsprüfung & Sensitivitätsanalyse
+
+```{r robustheit_h1}
+# 1. Normalverteilung der Residuen prüfen (Shapiro-Wilk-Test)
+shapiro_h1 <- shapiro.test(residuals(mod_cog_li))
+print(shapiro_h1)
+
+# 2. Einflussreiche Fälle über Cook's Distanz identifizieren
+cooks_d <- cooks.distance(mod_cog_li)
+cat("Maximale Cook's Distanz:", round(max(cooks_d, na.rm = TRUE), 3), "\n")
+cat("Probanden-Code des Ausreißers:", data$Proanden_Code[which.max(cooks_d)], "\n")
+
+# 3. Ausreißerrobuste Rangkorrelation nach Spearman
+spearman_h1 <- cor.test(data$tactile.li, data$ACC._COG, method = "spearman", exact = FALSE)
+print(spearman_h1)
+
+# 4. Sensitivitäts-Regression ohne den extremen Ausreißer (tactile.li < 50, n = 40)
+data_ohne_ausreisser_h1 <- data %>%
+  filter(tactile.li < 50) %>%
+  mutate(across(all_of(c("ACC._COG", "Alter", "tactile.li", "SPF_ges", col_geschlecht)),
+                ~as.numeric(scale(.))))
+
+mod_cog_li_ohne_ausreisser <- lm(
+  as.formula(paste("ACC._COG ~ Alter +", col_geschlecht, "+ tactile.li + SPF_ges")),
+  data = data_ohne_ausreisser_h1
+)
+summary(mod_cog_li_ohne_ausreisser)
+```
